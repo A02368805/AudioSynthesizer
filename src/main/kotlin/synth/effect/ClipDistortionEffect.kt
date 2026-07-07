@@ -13,8 +13,8 @@ class ClipDistortionEffect(
         }
     }
 
-    override fun render(): DoubleArray {
-        val samples = renderWrapped()
-        return DoubleArray(samples.size) { i -> samples[i].coerceIn(-threshold, threshold) }
-    }
+    override fun renderSegments(): List<DoubleArray> =
+        renderWrappedSegments().map { seg -> DoubleArray(seg.size) { i -> seg[i].coerceIn(-threshold, threshold) } }
+
+    override fun render(): DoubleArray = concatenate(renderSegments())
 }

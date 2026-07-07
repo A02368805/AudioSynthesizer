@@ -1,6 +1,7 @@
 package synth.effect
 
 import synth.source.AudioSource
+import synth.source.SegmentedAudioSource
 import kotlin.math.abs
 import kotlin.math.tanh
 import kotlin.test.Test
@@ -9,6 +10,18 @@ import kotlin.test.assertTrue
 
 private class FakeAudioSource(private val samples: DoubleArray) : AudioSource {
     override fun render(): DoubleArray = samples.copyOf()
+}
+
+private class FakeSegmentedAudioSource(
+    private val segments: List<DoubleArray>
+) : SegmentedAudioSource {
+    override fun renderSegments(): List<DoubleArray> = segments.map { it.copyOf() }
+    override fun render(): DoubleArray {
+        val result = DoubleArray(segments.sumOf { it.size })
+        var offset = 0
+        for (seg in segments) { seg.copyInto(result, offset); offset += seg.size }
+        return result
+    }
 }
 
 class AudioEffectDecoratorTest {
@@ -142,5 +155,76 @@ class AudioEffectDecoratorTest {
         val vol = VolumeEffect(clipped, 0.5)               // 0.8 → 0.4
         val result = TanhDistortionEffect(vol, 1.0).render() // tanh(0.4)
         assertEquals(tanh(0.4), result[0], 1e-9)
+    }
+
+    // ── ADS per-note restart ──────────────────────────────────────────────────
+
+    @Test
+    fun `ads restarts envelope for each segment`() {
+        // sampleRate=10, attackEnd=0.5s → first sample of every segment has envelope=0.0
+        val sampleRate = 10
+        val seg1 = DoubleArray(10) { 1.0 }
+        val seg2 = DoubleArray(10) { 1.0 }
+        val source = FakeSegmentedAudioSource(listOf(seg1, seg2))
+        // attackEnd=0.5, decayEnd=0.5 (no decay phase), sustain=0.25
+        val result = AdsEffect(source, 0.5, 0.5, 0.25, sampleRate).render()
+
+        // First sample of note 1 (index 0): time=0.0, attackEnd=0.5>0 → envelope=0.0
+        assertEquals(0.0, result[0], 1e-9, "Note 1 first sample should start at attack (0.0)")
+        // First sample of note 2 (index 10): ADS must restart → envelope=0.0 again
+        assertEquals(0.0, result[10], 1e-9, "Note 2 first sample must restart at attack (0.0)")
+        // Both buffers reach sustain near the end
+        // t=0.9s (index 9 or 19): time=0.9 >= decayEnd=0.5 → envelope=0.25
+        assertEquals(0.25, result[9], 1e-9, "Note 1 end should be at sustain (0.25)")
+        assertEquals(0.25, result[19], 1e-9, "Note 2 end should be at sustain (0.25)")
+    }
+
+    @Test
+    fun `ads with vol before it still restarts per segment`() {
+        val sampleRate = 10
+        val seg1 = DoubleArray(10) { 1.0 }
+        val seg2 = DoubleArray(10) { 1.0 }
+        val source = FakeSegmentedAudioSource(listOf(seg1, seg2))
+        val vol = VolumeEffect(source, 0.5)                      // 1.0 → 0.5 per sample
+        val result = AdsEffect(vol, 0.5, 0.5, 0.25, sampleRate).render()
+
+        // After vol: samples are 0.5; then ADS restarts per note
+        // t=0 of each note → envelope=0.0 → output=0.0
+        assertEquals(0.0, result[0], 1e-9, "Note 1 first sample should be 0 after vol+ads")
+        assertEquals(0.0, result[10], 1e-9, "Note 2 first sample should restart to 0 after vol+ads")
+    }
+
+    @Test
+    fun `ads with vol after it still restarts per segment`() {
+        val sampleRate = 10
+        val seg1 = DoubleArray(10) { 1.0 }
+        val seg2 = DoubleArray(10) { 1.0 }
+        val source = FakeSegmentedAudioSource(listOf(seg1, seg2))
+        val ads = AdsEffect(source, 0.5, 0.5, 0.25, sampleRate) // restarts per note
+        val result = VolumeEffect(ads, 0.5).render()             // scale by 0.5
+
+        // t=0 of note 1 → ADS envelope=0.0 → vol(0.0)=0.0
+        assertEquals(0.0, result[0], 1e-9, "Note 1 first sample after ads+vol should be 0")
+        // t=0 of note 2 → ADS restarts → envelope=0.0 → vol(0.0)=0.0
+        assertEquals(0.0, result[10], 1e-9, "Note 2 first sample after ads+vol should restart to 0")
+        // sustain end: envelope=0.25, vol=0.5 → 0.25*0.5=0.125
+        assertEquals(0.125, result[9], 1e-9, "Note 1 end should be sustain*vol level")
+        assertEquals(0.125, result[19], 1e-9, "Note 2 end should be sustain*vol level")
+    }
+
+    @Test
+    fun `ads with non-segmented source applies single envelope across full buffer`() {
+        // FakeAudioSource is NOT SegmentedAudioSource → falls back to listOf(render())
+        // ADS sees one big segment and applies the envelope continuously
+        val sampleRate = 10
+        val samples = DoubleArray(20) { 1.0 }   // flat 1.0 buffer, no note boundaries
+        val result = AdsEffect(FakeAudioSource(samples), 0.5, 0.5, 0.25, sampleRate).render()
+
+        // t=0: attackEnd=0.5 → envelope=0.0
+        assertEquals(0.0, result[0], 1e-9)
+        // t=0.9s (index 9): time>=decayEnd → sustain=0.25
+        assertEquals(0.25, result[9], 1e-9)
+        // t=1.0s (index 10): still sustain — NOT reset
+        assertEquals(0.25, result[10], 1e-9, "Non-segmented source must NOT restart at index 10")
     }
 }

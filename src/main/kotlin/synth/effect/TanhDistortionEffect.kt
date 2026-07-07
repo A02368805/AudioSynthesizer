@@ -12,8 +12,8 @@ class TanhDistortionEffect(
         require(drive > 0.0) { "Drive must be > 0.0, got $drive" }
     }
 
-    override fun render(): DoubleArray {
-        val samples = renderWrapped()
-        return DoubleArray(samples.size) { i -> tanh(samples[i] * drive) }
-    }
+    override fun renderSegments(): List<DoubleArray> =
+        renderWrappedSegments().map { seg -> DoubleArray(seg.size) { i -> tanh(seg[i] * drive) } }
+
+    override fun render(): DoubleArray = concatenate(renderSegments())
 }

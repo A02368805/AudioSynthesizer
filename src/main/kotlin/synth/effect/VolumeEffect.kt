@@ -11,8 +11,8 @@ class VolumeEffect(
         require(level >= 0.0) { "Volume level must be >= 0.0, got $level" }
     }
 
-    override fun render(): DoubleArray {
-        val samples = renderWrapped()
-        return DoubleArray(samples.size) { i -> samples[i] * level }
-    }
+    override fun renderSegments(): List<DoubleArray> =
+        renderWrappedSegments().map { seg -> DoubleArray(seg.size) { i -> seg[i] * level } }
+
+    override fun render(): DoubleArray = concatenate(renderSegments())
 }

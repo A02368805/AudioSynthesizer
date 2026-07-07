@@ -17,23 +17,21 @@ class AdsEffect(
         require(sampleRate > 0) { "sampleRate must be positive" }
     }
 
-    override fun render(): DoubleArray {
-        val samples = renderWrapped()
-        return DoubleArray(samples.size) { i ->
-            val time = i.toDouble() / sampleRate
-            val envelope = when {
-                time < attackEnd -> time / attackEnd
-                time < decayEnd -> {
-                    val decayDuration = decayEnd - attackEnd
-                    if (decayDuration > 0.0) {
-                        1.0 + (time - attackEnd) / decayDuration * (sustain - 1.0)
-                    } else {
-                        sustain
-                    }
-                }
-                else -> sustain
-            }
-            samples[i] * envelope
+    private fun envelopeAt(time: Double): Double = when {
+        attackEnd > 0.0 && time < attackEnd ->
+            time / attackEnd
+        decayEnd > attackEnd && time < decayEnd -> {
+            val progress = (time - attackEnd) / (decayEnd - attackEnd)
+            1.0 - progress * (1.0 - sustain)
         }
+        else -> sustain
     }
+
+    private fun applyEnvelope(segment: DoubleArray): DoubleArray =
+        DoubleArray(segment.size) { i -> segment[i] * envelopeAt(i.toDouble() / sampleRate) }
+
+    override fun renderSegments(): List<DoubleArray> =
+        renderWrappedSegments().map { applyEnvelope(it) }
+
+    override fun render(): DoubleArray = concatenate(renderSegments())
 }
